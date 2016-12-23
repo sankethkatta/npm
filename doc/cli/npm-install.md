@@ -174,7 +174,8 @@ after packing it up into a tarball (b).
 
     `<protocol>` is one of `git`, `git+ssh`, `git+http`, `git+https`,
     or `git+file`.
-    If no `<commit-ish>` is specified, then `master` is used.
+    If no `<commit-ish>` is specified, then `master` is used. If the `commit-ish`
+    is a valid semver range, it will be resolved to the max satisfying git tag.
 
     If the repository makes use of submodules, those submodules will
     be cloned as well.
