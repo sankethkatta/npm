@@ -10,24 +10,31 @@ var npm = require('../../lib/npm.js')
 var common = require('../common-tap.js')
 
 var pkg = resolve(__dirname, 'add-remote-git-semver')
+var pkgDeps = resolve(__dirname, 'add-remote-git-semver', 'node_modules')
 var repo = resolve(__dirname, 'add-remote-git-semver-repo')
 
 var daemon
 var daemonPID
 var git
 
-var pjParent = JSON.stringify({
-  name: 'parent',
-  version: '1.2.3',
-  dependencies: {
-    child: 'git://localhost:1234/child.git#^1.0.0'
-  }
-}, null, 2) + '\n'
+var writeParentPkg = function (commitish) {
+  var pjParent = JSON.stringify({
+    name: 'parent',
+    version: '1.2.3',
+    dependencies: {
+      child: 'git://localhost:1234/child.git#' + commitish
+    }
+  }, null, 2) + '\n'
+  fs.writeFileSync(resolve(pkg, 'package.json'), pjParent)
+}
 
-var pjChild = JSON.stringify({
-  name: 'child',
-  version: '1.0.3'
-}, null, 2) + '\n'
+var pjChildVersions = ['1.0.0', '1.0.1', '1.0.3', '1.1.0', '1.1.5', '2.0.0']
+var createChildPkg = function (version) {
+  return JSON.stringify({
+    name: 'child',
+    version: version
+  }, null, 2) + '\n'
+}
 
 test('setup', function (t) {
   bootstrap()
@@ -43,32 +50,63 @@ test('setup', function (t) {
   })
 })
 
-test('install from repo', function (t) {
+test('install exact version tag', function (t) {
   process.chdir(pkg)
+  writeParentPkg('v2.0.0')
   npm.commands.install('.', [], function (er, result) {
     t.ifError(er, 'npm installed via git')
-    t.is(result[0][0], 'child@1.0.3')
+    t.equal(result.length, 1)
+    t.equal(result[0][0], 'child@2.0.0')
 
+    cleanup(pkgDeps)
+    t.end()
+  })
+})
+
+test('install latest tag', function (t) {
+  process.chdir(pkg)
+  writeParentPkg('latest')
+  npm.commands.install('.', [], function (er, result) {
+    t.ifError(er, 'npm installed via git')
+    t.equal(result.length, 1)
+    t.equal(result[0][0], 'child@2.0.0')
+
+    cleanup(pkgDeps)
+    t.end()
+  })
+})
+
+test('install semver exact version', function (t) {
+  process.chdir(pkg)
+  writeParentPkg('semver:2.0.0')
+  npm.commands.install('.', [], function (er, result) {
+    t.ifError(er, 'npm installed via git')
+    t.equal(result.length, 1)
+    t.equal(result[0][0], 'child@2.0.0')
+
+    cleanup(pkgDeps)
     t.end()
   })
 })
 
 test('clean', function (t) {
   daemon.on('close', function () {
-    cleanup()
+    cleanup(repo)
+    cleanup(pkg)
     t.end()
   })
   process.kill(daemonPID)
 })
 
 function bootstrap () {
+  cleanup(repo)
+  cleanup(pkg)
   mkdirp.sync(pkg)
-  fs.writeFileSync(resolve(pkg, 'package.json'), pjParent)
 }
 
 function setup (cb) {
   mkdirp.sync(repo)
-  fs.writeFileSync(resolve(repo, 'package.json'), pjChild)
+  fs.writeFileSync(resolve(repo, 'package.json'), createChildPkg('0.0.0'))
   npm.load({ registry: common.registry, loglevel: 'silent' }, function () {
     git = require('../../lib/utils/git.js')
 
@@ -101,25 +139,50 @@ function setup (cb) {
       }
     }
 
-    common.makeGitRepo({
-      path: repo,
-      commands: [
+    var commands = []
+    // write package.json files and tag each version
+    pjChildVersions.forEach(function (version) {
+      commands.push(
+        [
+          fs, 'writeFile',
+          resolve(repo, 'package.json'), createChildPkg(version)
+        ],
         git.chainableExec(
-          ['tag', 'v1.0.3'],
+          ['add', 'package.json'],
           { cwd: repo, env: process.env }
         ),
         git.chainableExec(
-          ['clone', '--bare', repo, 'child.git'],
-          { cwd: pkg, env: process.env }
+          ['commit', '-m', 'up version to ' + version],
+          { cwd: repo, env: process.env }
         ),
-        startDaemon
-      ]
+        git.chainableExec(
+          ['tag', 'v' + version],
+          { cwd: repo, env: process.env }
+        )
+      )
+    })
+
+    commands.push(
+      // non semver-valid tag should be handled
+      git.chainableExec(
+        ['tag', 'latest'],
+        { cwd: repo, env: process.env }
+      ),
+      git.chainableExec(
+        ['clone', '--bare', repo, 'child.git'],
+        { cwd: pkg, env: process.env }
+      ),
+      startDaemon
+    )
+
+    common.makeGitRepo({
+      path: repo,
+      commands: commands
     }, cb)
   })
 }
 
-function cleanup () {
+function cleanup (path) {
   process.chdir(osenv.tmpdir())
-  rimraf.sync(repo)
-  rimraf.sync(pkg)
+  rimraf.sync(path)
 }
